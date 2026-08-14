@@ -1,31 +1,32 @@
-# .github/workflows/compile-slang.yml
-name: Slang cross‑compile & commit binaries
+name: Slang cross-compile & commit binaries
+
 on:
   push:
-    branches: [ main ]
-  workflow_dispatch:          # manual trigger
+    # Submodule bumps show up as a change to the gitlink path. Any branch:
+    # binaries belong on the branch the bump landed on.
+    paths:
+      - 'Vendor/slang'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ${{ matrix.os }}
-    # Lets the built-in GITHUB_TOKEN push; no PAT secret to create or rotate.
     permissions:
       contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          # ponytail: no custom toolchain files. Native targets need none;
-          # android/wasm reuse the toolchain that ships with the NDK / emsdk.
-          # ---------- Windows ----------
           - os: windows-2025
             target: win-x86_64
             msvc_arch: amd64
             lib_ext: dll
-          # amd64_arm64 = x64 host, ARM64 target. Plain "arm64" would select the
-          # ARM64-hosted toolchain, which cannot run on an x64 runner.
-          # cl is pinned so CMake uses the one vcvars put on PATH instead of
-          # discovering the ARM64-hosted clang.
+          # amd64_arm64 = x64 host, ARM64 target; plain arm64 is ARM64-hosted
+          # and won't run here. cl pinned so CMake doesn't find ARM64 clang.
           - os: windows-2025
             target: win-arm64
             msvc_arch: amd64_arm64
@@ -37,7 +38,6 @@ jobs:
               CMAKE_CXX_COMPILER=cl
             lib_ext: dll
 
-          # ---------- Linux ----------
           - os: ubuntu-24.04
             target: linux-x86_64
             lib_ext: so
@@ -51,9 +51,7 @@ jobs:
               CMAKE_CXX_COMPILER=aarch64-linux-gnu-g++
             lib_ext: so
 
-          # ---------- macOS ----------
-          # Both from the arm64 runner; the Xcode SDK is universal, so
-          # CMAKE_OSX_ARCHITECTURES covers x86_64 without an Intel runner.
+          # Xcode's SDK is universal, so both arches come off the arm64 runner.
           - os: macos-15
             target: macos-x86_64
             cmake_opts: CMAKE_OSX_ARCHITECTURES=x86_64
@@ -63,8 +61,6 @@ jobs:
             cmake_opts: CMAKE_OSX_ARCHITECTURES=arm64
             lib_ext: dylib
 
-          # ---------- Android (ARM64) ----------
-          # CMAKE_TOOLCHAIN_FILE comes from the env, set by the NDK step
           - os: ubuntu-24.04
             target: android-arm64
             cross: true
@@ -73,46 +69,40 @@ jobs:
               ANDROID_PLATFORM=android-28
             lib_ext: so
 
-          # ---------- WebAssembly (Emscripten) ----------
-          # .NET on WASM links native code statically into dotnet.wasm via
-          # NativeFileReference; there is no runtime dynamic P/Invoke. So this
-          # target wants an archive, not Emscripten's .js loader.
-          # Overrides the global SLANG_LIB_TYPE=SHARED (last -D wins).
+          # .NET on WASM statically links native code into dotnet.wasm, so this
+          # wants an archive rather than Emscripten's .js loader. Overrides the
+          # defaults below (last -D wins); objcopy can't strip wasm output.
           - os: ubuntu-24.04
             target: wasm-emscripten
             cross: true
-            cmake_opts: SLANG_LIB_TYPE=STATIC
+            cmake_opts: |
+              SLANG_LIB_TYPE=STATIC
+              SLANG_ENABLE_SPLIT_DEBUG_INFO=OFF
             lib_ext: a
 
     env:
-      SLANG_REPO: https://github.com/shader-slang/slang.git
       BUILD_ROOT: ${{ github.workspace }}/slang-build
-      OUTPUT_ROOT: ${{ github.workspace }}/prebuilt/${{ matrix.target }}
+      OUTPUT_ROOT: ${{ github.workspace }}/lib/${{ matrix.target }}
 
-    # bash on every runner, so one set of scripts works on Windows too
     defaults:
       run:
         shell: bash
 
     steps:
-      # ---------------------------------------------------------
-      # 0️⃣  Checkout this repository (the one that will receive the binaries)
-      # ---------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          persist-credentials: false   # we’ll push with a separate token
+          persist-credentials: false
+          submodules: recursive
+          # Slang versions itself from `git describe`, and the push retry rebases.
+          fetch-depth: 0
 
-      # ---------------------------------------------------------
-      # 2️⃣  Install platform‑specific toolchains
-      # ---------------------------------------------------------
-      - name: Install Linux aarch64 cross‑compiler
-        if: runner.os == 'Linux' && matrix.target == 'linux-aarch64'
+      - name: Install Linux aarch64 cross-compiler
+        if: matrix.target == 'linux-aarch64'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
-      # ponytail: ubuntu runners ship an NDK already, no download needed
       - name: Use preinstalled Android NDK
         if: matrix.target == 'android-arm64'
         run: echo "ANDROID_NDK_ROOT=$ANDROID_NDK_LATEST_HOME" >> $GITHUB_ENV
@@ -121,23 +111,8 @@ jobs:
         if: matrix.target == 'wasm-emscripten'
         uses: emscripten-core/setup-emsdk@v16
 
-      # ---------------------------------------------------------
-      # 4️⃣  Clone Slang source code
-      # ---------------------------------------------------------
-      - name: Clone Slang repository
-        run: |
-          git clone "${SLANG_REPO}" "${BUILD_ROOT}/src" --recurse-submodules
-          # Optional: checkout a specific tag, e.g. v2025.21
-          # cd "${BUILD_ROOT}/src" && git checkout v2025.21
-
-      # ---------------------------------------------------------
-      # 5️⃣  Host generators (cross targets only)
-      #
-      # The build runs slang-embed / slang-generate / slang-fiddle as part of
-      # compiling Slang, so they must be native to the runner, not the target.
-      # Build them first with the plain host compiler, install the "generators"
-      # component, then hand the path to the real build.
-      # ---------------------------------------------------------
+      # Slang runs slang-embed/generate/fiddle during its own build, so cross
+      # targets need them built for the host first.
       - name: Set up host MSVC environment
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1.13.0
@@ -149,7 +124,7 @@ jobs:
         uses: threeal/cmake-action@v2.1.0
         with:
           generator: Ninja
-          source-dir: ${{ github.workspace }}/slang-build/src
+          source-dir: ${{ github.workspace }}/Vendor/slang
           build-dir: ${{ github.workspace }}/slang-build/generators
           options: |
             CMAKE_BUILD_TYPE=Release
@@ -159,7 +134,7 @@ jobs:
             SLANG_ENABLE_SLANGD=OFF
             SLANG_ENABLE_SLANG_RHI=OFF
             SLANG_SLANG_LLVM_FLAVOR=DISABLE
-            SLANG_ENABLE_SPLIT_DEBUG_INFO=OFF
+            SLANG_ENABLE_SPLIT_DEBUG_INFO=ON
           build-args: --target all-generators
 
       - name: Install host generators
@@ -169,20 +144,14 @@ jobs:
             --config Release \
             --component generators \
             --prefix "${BUILD_ROOT}/generators-install"
-          # Fail here rather than deep into the target build: without these,
-          # Slang silently falls back to compiling the generators for the target.
+          # Fail here; otherwise Slang silently rebuilds them for the target.
           ls -l "${BUILD_ROOT}/generators-install/bin"
           test -x "${BUILD_ROOT}/generators-install/bin/slang-embed" \
             || test -x "${BUILD_ROOT}/generators-install/bin/slang-embed.exe" \
             || { echo "::error::host generators missing from install prefix"; exit 1; }
 
-      # ---------------------------------------------------------
-      # 6️⃣  Switch to the target toolchain
-      #
-      # Set only now: CMake >= 3.21 reads CMAKE_TOOLCHAIN_FILE from the
-      # environment, so exporting it earlier would have cross-compiled the
-      # host generators too.
-      # ---------------------------------------------------------
+      # CMake reads CMAKE_TOOLCHAIN_FILE from the env, so set it only after the
+      # host generators are built.
       - name: Point CMake at the Android toolchain
         if: matrix.target == 'android-arm64'
         run: echo "CMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" >> $GITHUB_ENV
@@ -191,7 +160,6 @@ jobs:
         if: matrix.target == 'wasm-emscripten'
         run: echo "CMAKE_TOOLCHAIN_FILE=$EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake" >> $GITHUB_ENV
 
-      # Target toolchain last, so it overrides the host one set above
       - name: Set up target MSVC environment
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1.13.0
@@ -202,7 +170,7 @@ jobs:
         uses: threeal/cmake-action@v2.1.0
         with:
           generator: Ninja
-          source-dir: ${{ github.workspace }}/slang-build/src
+          source-dir: ${{ github.workspace }}/Vendor/slang
           build-dir: ${{ github.workspace }}/slang-build/${{ matrix.target }}
           options: |
             CMAKE_BUILD_TYPE=Release
@@ -213,30 +181,29 @@ jobs:
             SLANG_ENABLE_SLANGD=OFF
             SLANG_ENABLE_SLANG_RHI=OFF
             SLANG_SLANG_LLVM_FLAVOR=DISABLE
-            SLANG_ENABLE_SPLIT_DEBUG_INFO=OFF
+            SLANG_ENABLE_SPLIT_DEBUG_INFO=ON
             ${{ matrix.cross && format('SLANG_GENERATORS_PATH={0}/slang-build/generators-install/bin', github.workspace) || '' }}
             ${{ matrix.cmake_opts }}
           build-args: --config Release
 
-      # ---------------------------------------------------------
-      # 7️⃣  Locate the produced library and copy it to a version‑controlled path
-      # ---------------------------------------------------------
-      # Install rather than spelunking the build tree: Slang's own rules decide
-      # the names, the versioned/symlink pairs and the bin-vs-lib split, and
-      # they differ per platform.
+      # Install rather than guess: names, version symlinks and the bin/lib split
+      # are platform-specific and Slang already knows them.
       - name: Install to a staging prefix
         run: |
           cmake --install "${BUILD_ROOT}/${{ matrix.target }}" \
             --config Release \
             --prefix "${BUILD_ROOT}/install"
 
-      - name: Copy library to prebuilt folder
+      - name: Copy library to lib folder
         run: |
+          # Filenames carry the Slang version, so wipe or old ones linger.
+          rm -rf "${OUTPUT_ROOT}"
           mkdir -p "${OUTPUT_ROOT}"
-          # cp -a keeps the soname symlink, which Linux needs at load time.
+          # cp -a keeps the soname symlink Linux needs at load time.
           find "${BUILD_ROOT}/install" \( -type f -o -type l \) \
             -name "*slang-compiler*" \
             ! -name "*.h" ! -name "*.cmake" \
+            ! -name "*.dwarf" ! -name "*.pdb" \
             -exec cp -a {} "${OUTPUT_ROOT}/" \;
           ls -l "${OUTPUT_ROOT}"
           test -n "$(ls -A "${OUTPUT_ROOT}")" || {
@@ -248,9 +215,14 @@ jobs:
             exit 1
           }
 
-      # ---------------------------------------------------------
-      # 8️⃣  Commit & push binaries back to the repo
-      # ---------------------------------------------------------
+      # Static archives keep every object's debug info and Slang builds Release
+      # with -g. Debug only: the symbols are still needed at link time.
+      - name: Strip wasm archive
+        if: matrix.target == 'wasm-emscripten'
+        run: |
+          "$EMSDK/upstream/bin/llvm-strip" --strip-debug "${OUTPUT_ROOT}"/*.a
+          ls -l "${OUTPUT_ROOT}"
+
       - name: Set up git identity
         run: |
           git config user.name "github-actions[bot]"
@@ -260,16 +232,15 @@ jobs:
         env:
           GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git add prebuilt/${{ matrix.target }}
+          git add -A lib/${{ matrix.target }}
           if git diff --cached --quiet; then
-            echo "No changes for ${{ matrix.target }} - nothing to commit."
+            echo "No changes for ${{ matrix.target }}."
             exit 0
           fi
-          git commit -m "ci: update Slang binaries for ${{ matrix.target }} (auto-generated)"
+          git commit -m "ci: update Slang binaries for ${{ matrix.target }}"
           remote="https://x-access-token:${GIT_TOKEN}@github.com/${{ github.repository }}.git"
           branch="${GITHUB_REF#refs/heads/}"
-          # The matrix legs all push to the same branch, so losing the race is
-          # expected. Rebase onto whatever landed first and try again.
+          # All matrix legs push to the same branch, so losing the race is normal.
           for attempt in 1 2 3 4 5; do
             if git push "$remote" "HEAD:$branch"; then
               exit 0

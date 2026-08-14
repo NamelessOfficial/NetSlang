@@ -58,7 +58,7 @@ jobs:
       SLANG_REPO: https://github.com/shader-slang/slang.git
       BUILD_ROOT: ${{ github.workspace }}/slang-build
       TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains
-      OUTPUT_ROOT: ${{ github.workspace }}/prebuilt/${{ matrix.target }}
+      OUTPUT_ROOT: ${{ github.workspace }}/lib/${{ matrix.target }}
 
     steps:
       # ---------------------------------------------------------
@@ -68,23 +68,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false   # we’ll push with a separate token
-
-      # ---------------------------------------------------------
-      # 1️⃣  Install CMake (official action) and Ninja
-      # ---------------------------------------------------------
-      - name: Install CMake
-        uses: ursdev/setup-cmake@v2        # provides latest CMake + adds to PATH
-        with:
-          cmake-version: 3.27
-
-      - name: Install Ninja (cross‑platform)
-        run: |
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            choco install ninja -y
-          else
-            sudo apt-get update
-            sudo apt-get install -y ninja-build
-          fi
 
       # ---------------------------------------------------------
       # 2️⃣  Install platform‑specific toolchains
@@ -126,29 +109,23 @@ jobs:
       # ---------------------------------------------------------
       - name: Clone Slang repository
         run: |
-          git clone "${SLANG_REPO}" "${BUILD_ROOT}/src"
+          git clone "${SLANG_REPO}" "${BUILD_ROOT}/src" --recurse-submodules
           # Optional: checkout a specific tag, e.g. v2025.21
           # cd "${BUILD_ROOT}/src" && git checkout v2025.21
 
-      # ---------------------------------------------------------
-      # 5️⃣  CMake configuration
-      # ---------------------------------------------------------
-      - name: CMake configure
-        run: |
-          cmake -S "${BUILD_ROOT}/src" \
-                -B "${BUILD_ROOT}/${{ matrix.target }}" \
-                -G Ninja \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN_DIR}/${{ matrix.toolchain }}" \
-                -DSLANG_ENABLE_SHARED=ON \
-                -DSLANG_BUILD_STATIC=OFF
-
-      # ---------------------------------------------------------
-      # 6️⃣  Build the shared library
-      # ---------------------------------------------------------
-      - name: CMake build
-        run: |
-          cmake --build "${BUILD_ROOT}/${{ matrix.target }}" --config Release
+      - name: Build Project
+        uses: threeal/cmake-action@v2.1.0
+        with:
+          generator: Ninja
+          source-dir: "${BUILD_ROOT}/src"
+          build-dir: "${BUILD_ROOT}/${{ matrix.target }}"
+          options: |
+            CMAKE_BUILD_TYPE=Release
+            CMAKE_TOOLCHAIN_FILE="${TOOLCHAIN_DIR}/${{ matrix.toolchain }}"
+            SLANG_ENABLE_SHARED=ON
+            SLANG_BUILD_STATIC=OFF
+          build-args: |
+            config Release
 
       # ---------------------------------------------------------
       # 7️⃣  Locate the produced library and copy it to a version‑controlled path

@@ -126,10 +126,10 @@ jobs:
       BUILD_ROOT: ${{ github.workspace }}/slang-build
       OUTPUT_ROOT: ${{ github.workspace }}/NetSlang/lib/${{ matrix.target }}
       # git reads identity from the environment; no `git config` step needed.
-      GIT_AUTHOR_NAME: github-actions[bot]
-      GIT_AUTHOR_EMAIL: github-actions[bot]@users.noreply.github.com
-      GIT_COMMITTER_NAME: github-actions[bot]
-      GIT_COMMITTER_EMAIL: github-actions[bot]@users.noreply.github.com
+      GIT_AUTHOR_NAME: ${{ vars.CI_NAME }}
+      GIT_AUTHOR_EMAIL: ${{ vars.CI_EMAIL }}
+      GIT_COMMITTER_NAME: ${{ vars.CI_NAME }}
+      GIT_COMMITTER_EMAIL: ${{ vars.CI_EMAIL }}
 
     defaults:
       run:
@@ -144,6 +144,16 @@ jobs:
           submodules: recursive
           # Slang versions itself from `git describe`, and the push retry rebases.
           fetch-depth: 0
+
+      - name: Configure commit signing
+        run: |
+          key="$(git rev-parse --show-toplevel)/.git/signing_key"
+          printf '%s\n' "${{ secrets.CI_SIGNING_KEY }}" > "$key"
+          chmod 600 "$key"
+          git config gpg.format ssh
+          git config user.signingkey "$key"
+          git config commit.gpgsign true
+          git config rebase.gpgSign true
 
       - name: Install Linux aarch64 cross-compiler
         if: matrix.target == 'linux-aarch64'
@@ -325,15 +335,25 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       CI_BRANCH: ${{ needs.prepare.outputs.branch }}
       SRC_BRANCH: ${{ needs.prepare.outputs.source }}
-      GIT_AUTHOR_NAME: github-actions[bot]
-      GIT_AUTHOR_EMAIL: github-actions[bot]@users.noreply.github.com
-      GIT_COMMITTER_NAME: github-actions[bot]
-      GIT_COMMITTER_EMAIL: github-actions[bot]@users.noreply.github.com
+      GIT_AUTHOR_NAME: ${{ vars.CI_NAME }}
+      GIT_AUTHOR_EMAIL: ${{ vars.CI_EMAIL }}
+      GIT_COMMITTER_NAME: ${{ vars.CI_NAME }}
+      GIT_COMMITTER_EMAIL: ${{ vars.CI_EMAIL }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
+
+      - name: Configure commit signing
+        run: |
+          key="$(git rev-parse --show-toplevel)/.git/signing_key"
+          printf '%s\n' "${{ secrets.CI_SIGNING_KEY }}" > "$key"
+          chmod 600 "$key"
+          git config gpg.format ssh
+          git config user.signingkey "$key"
+          git config commit.gpgsign true
+          git config rebase.gpgSign true
 
       - name: Merge into source branch, or open a PR
         run: |

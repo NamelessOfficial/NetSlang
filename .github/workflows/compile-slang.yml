@@ -8,6 +8,9 @@ on:
 jobs:
   build:
     runs-on: ${{ matrix.os }}
+    # Lets the built-in GITHUB_TOKEN push; no PAT secret to create or rotate.
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -26,6 +29,7 @@ jobs:
           - os: windows-2025
             target: win-arm64
             msvc_arch: amd64_arm64
+            cross: true
             cmake_opts: |
               CMAKE_SYSTEM_NAME=Windows
               CMAKE_SYSTEM_PROCESSOR=ARM64
@@ -39,6 +43,7 @@ jobs:
             lib_ext: so
           - os: ubuntu-24.04
             target: linux-aarch64
+            cross: true
             cmake_opts: |
               CMAKE_SYSTEM_NAME=Linux
               CMAKE_SYSTEM_PROCESSOR=aarch64
@@ -62,15 +67,22 @@ jobs:
           # CMAKE_TOOLCHAIN_FILE comes from the env, set by the NDK step
           - os: ubuntu-24.04
             target: android-arm64
+            cross: true
             cmake_opts: |
               ANDROID_ABI=arm64-v8a
               ANDROID_PLATFORM=android-28
             lib_ext: so
 
           # ---------- WebAssembly (Emscripten) ----------
+          # .NET on WASM links native code statically into dotnet.wasm via
+          # NativeFileReference; there is no runtime dynamic P/Invoke. So this
+          # target wants an archive, not Emscripten's .js loader.
+          # Overrides the global SLANG_LIB_TYPE=SHARED (last -D wins).
           - os: ubuntu-24.04
             target: wasm-emscripten
-            lib_ext: js   # Emscripten emits a .js wrapper (and .wasm)
+            cross: true
+            cmake_opts: SLANG_LIB_TYPE=STATIC
+            lib_ext: a
 
     env:
       SLANG_REPO: https://github.com/shader-slang/slang.git
@@ -100,28 +112,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
-      # ponytail: ubuntu runners ship an NDK already, no download needed.
-      # CMake >= 3.21 reads CMAKE_TOOLCHAIN_FILE from the environment, so the
-      # cmake-action needs no toolchain option of its own.
+      # ponytail: ubuntu runners ship an NDK already, no download needed
       - name: Use preinstalled Android NDK
         if: matrix.target == 'android-arm64'
-        run: |
-          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_LATEST_HOME" >> $GITHUB_ENV
-          echo "CMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake" >> $GITHUB_ENV
+        run: echo "ANDROID_NDK_ROOT=$ANDROID_NDK_LATEST_HOME" >> $GITHUB_ENV
 
       - name: Install Emscripten SDK
         if: matrix.target == 'wasm-emscripten'
         uses: emscripten-core/setup-emsdk@v16
-
-      - name: Point CMake at the Emscripten toolchain
-        if: matrix.target == 'wasm-emscripten'
-        run: echo "CMAKE_TOOLCHAIN_FILE=$EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake" >> $GITHUB_ENV
-
-      - name: Set up MSVC environment
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1.13.0
-        with:
-          arch: ${{ matrix.msvc_arch }}
 
       # ---------------------------------------------------------
       # 4️⃣  Clone Slang source code
@@ -131,6 +129,74 @@ jobs:
           git clone "${SLANG_REPO}" "${BUILD_ROOT}/src" --recurse-submodules
           # Optional: checkout a specific tag, e.g. v2025.21
           # cd "${BUILD_ROOT}/src" && git checkout v2025.21
+
+      # ---------------------------------------------------------
+      # 5️⃣  Host generators (cross targets only)
+      #
+      # The build runs slang-embed / slang-generate / slang-fiddle as part of
+      # compiling Slang, so they must be native to the runner, not the target.
+      # Build them first with the plain host compiler, install the "generators"
+      # component, then hand the path to the real build.
+      # ---------------------------------------------------------
+      - name: Set up host MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+          arch: amd64
+
+      - name: Build host generators
+        if: matrix.cross
+        uses: threeal/cmake-action@v2.1.0
+        with:
+          generator: Ninja
+          source-dir: ${{ github.workspace }}/slang-build/src
+          build-dir: ${{ github.workspace }}/slang-build/generators
+          options: |
+            CMAKE_BUILD_TYPE=Release
+            SLANG_ENABLE_TESTS=OFF
+            SLANG_ENABLE_EXAMPLES=OFF
+            SLANG_ENABLE_GFX=OFF
+            SLANG_ENABLE_SLANGD=OFF
+            SLANG_ENABLE_SLANG_RHI=OFF
+            SLANG_SLANG_LLVM_FLAVOR=DISABLE
+            SLANG_ENABLE_SPLIT_DEBUG_INFO=OFF
+          build-args: --target all-generators
+
+      - name: Install host generators
+        if: matrix.cross
+        run: |
+          cmake --install "${BUILD_ROOT}/generators" \
+            --config Release \
+            --component generators \
+            --prefix "${BUILD_ROOT}/generators-install"
+          # Fail here rather than deep into the target build: without these,
+          # Slang silently falls back to compiling the generators for the target.
+          ls -l "${BUILD_ROOT}/generators-install/bin"
+          test -x "${BUILD_ROOT}/generators-install/bin/slang-embed" \
+            || test -x "${BUILD_ROOT}/generators-install/bin/slang-embed.exe" \
+            || { echo "::error::host generators missing from install prefix"; exit 1; }
+
+      # ---------------------------------------------------------
+      # 6️⃣  Switch to the target toolchain
+      #
+      # Set only now: CMake >= 3.21 reads CMAKE_TOOLCHAIN_FILE from the
+      # environment, so exporting it earlier would have cross-compiled the
+      # host generators too.
+      # ---------------------------------------------------------
+      - name: Point CMake at the Android toolchain
+        if: matrix.target == 'android-arm64'
+        run: echo "CMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" >> $GITHUB_ENV
+
+      - name: Point CMake at the Emscripten toolchain
+        if: matrix.target == 'wasm-emscripten'
+        run: echo "CMAKE_TOOLCHAIN_FILE=$EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake" >> $GITHUB_ENV
+
+      # Target toolchain last, so it overrides the host one set above
+      - name: Set up target MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+          arch: ${{ matrix.msvc_arch }}
 
       - name: Build Project
         uses: threeal/cmake-action@v2.1.0
@@ -147,20 +213,40 @@ jobs:
             SLANG_ENABLE_SLANGD=OFF
             SLANG_ENABLE_SLANG_RHI=OFF
             SLANG_SLANG_LLVM_FLAVOR=DISABLE
+            SLANG_ENABLE_SPLIT_DEBUG_INFO=OFF
+            ${{ matrix.cross && format('SLANG_GENERATORS_PATH={0}/slang-build/generators-install/bin', github.workspace) || '' }}
             ${{ matrix.cmake_opts }}
           build-args: --config Release
 
       # ---------------------------------------------------------
       # 7️⃣  Locate the produced library and copy it to a version‑controlled path
       # ---------------------------------------------------------
+      # Install rather than spelunking the build tree: Slang's own rules decide
+      # the names, the versioned/symlink pairs and the bin-vs-lib split, and
+      # they differ per platform.
+      - name: Install to a staging prefix
+        run: |
+          cmake --install "${BUILD_ROOT}/${{ matrix.target }}" \
+            --config Release \
+            --prefix "${BUILD_ROOT}/install"
+
       - name: Copy library to prebuilt folder
         run: |
-          lib=$(find "${BUILD_ROOT}/${{ matrix.target }}" -type f \
-            \( -name "slang-compiler.${{ matrix.lib_ext }}" \
-            -o -name "libslang-compiler.${{ matrix.lib_ext }}" \) | head -n1)
-          test -n "$lib" || { echo "::error::no slang-compiler.${{ matrix.lib_ext }} produced"; exit 1; }
           mkdir -p "${OUTPUT_ROOT}"
-          cp "$lib" "${OUTPUT_ROOT}/"
+          # cp -a keeps the soname symlink, which Linux needs at load time.
+          find "${BUILD_ROOT}/install" \( -type f -o -type l \) \
+            -name "*slang-compiler*" \
+            ! -name "*.h" ! -name "*.cmake" \
+            -exec cp -a {} "${OUTPUT_ROOT}/" \;
+          ls -l "${OUTPUT_ROOT}"
+          test -n "$(ls -A "${OUTPUT_ROOT}")" || {
+            echo "::error::no slang-compiler library installed for ${{ matrix.target }}"
+            echo "--- staging prefix ---"
+            find "${BUILD_ROOT}/install" \( -type f -o -type l \)
+            echo "--- build tree ---"
+            find "${BUILD_ROOT}/${{ matrix.target }}" -name "*slang*" \( -type f -o -type l \)
+            exit 1
+          }
 
       # ---------------------------------------------------------
       # 8️⃣  Commit & push binaries back to the repo
@@ -172,13 +258,24 @@ jobs:
 
       - name: Commit and push binaries
         env:
-          # Create a secret named PAT_TOKEN with `repo` scope.
-          GIT_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git add prebuilt/${{ matrix.target }}/*
+          git add prebuilt/${{ matrix.target }}
           if git diff --cached --quiet; then
-            echo "No changes for ${{ matrix.target }} – nothing to commit."
-          else
-            git commit -m "ci: update Slang binaries for ${{ matrix.target }} (auto‑generated)"
-            git push https://x-access-token:${GIT_TOKEN}@github.com/${{ github.repository }}.git HEAD:${{ github.ref }}
+            echo "No changes for ${{ matrix.target }} - nothing to commit."
+            exit 0
           fi
+          git commit -m "ci: update Slang binaries for ${{ matrix.target }} (auto-generated)"
+          remote="https://x-access-token:${GIT_TOKEN}@github.com/${{ github.repository }}.git"
+          branch="${GITHUB_REF#refs/heads/}"
+          # The matrix legs all push to the same branch, so losing the race is
+          # expected. Rebase onto whatever landed first and try again.
+          for attempt in 1 2 3 4 5; do
+            if git push "$remote" "HEAD:$branch"; then
+              exit 0
+            fi
+            echo "push rejected (attempt $attempt), rebasing"
+            git pull --rebase "$remote" "$branch"
+          done
+          echo "::error::could not push after 5 attempts"
+          exit 1

@@ -3,19 +3,16 @@ name: Slang cross‑compile & commit binaries
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:          # allow manual runs
+  workflow_dispatch:          # manual trigger
 
 jobs:
-  # -------------------------------------------------------------
-  # 1️⃣  Build matrix – one entry per OS/architecture
-  # -------------------------------------------------------------
   build:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # ----- Windows -------------------------------------------------
+          # ---------- Windows ----------
           - os: windows-2022
             target: win-x86_64
             toolchain: win64-x86_64.cmake
@@ -25,7 +22,7 @@ jobs:
             toolchain: win-arm64.cmake
             lib_ext: dll
 
-          # ----- Linux ---------------------------------------------------
+          # ---------- Linux ----------
           - os: ubuntu-22.04
             target: linux-x86_64
             toolchain: linux-x86_64.cmake
@@ -35,7 +32,7 @@ jobs:
             toolchain: linux-aarch64.cmake
             lib_ext: so
 
-          # ----- macOS --------------------------------------------------
+          # ---------- macOS ----------
           - os: macos-13          # Intel runner (x86_64)
             target: macos-x86_64
             toolchain: macos-x86_64.cmake
@@ -45,17 +42,17 @@ jobs:
             toolchain: macos-arm64.cmake
             lib_ext: dylib
 
-          # ----- Android (ARM64) ----------------------------------------
+          # ---------- Android (ARM64) ----------
           - os: ubuntu-22.04
             target: android-arm64
             toolchain: android-arm64.cmake
             lib_ext: so
 
-          # ----- WebAssembly (Emscripten) -------------------------------
+          # ---------- WebAssembly (Emscripten) ----------
           - os: ubuntu-22.04
             target: wasm-emscripten
             toolchain: wasm-emscripten.cmake
-            lib_ext: js   # Emscripten emits .js wrapper (and .wasm)
+            lib_ext: js   # Emscripten emits a .js wrapper (and .wasm)
 
     env:
       SLANG_REPO: https://github.com/shader-slang/slang.git
@@ -65,7 +62,7 @@ jobs:
 
     steps:
       # ---------------------------------------------------------
-      # 0️⃣  Checkout THIS repository (the one that will receive the binaries)
+      # 0️⃣  Checkout this repository (the one that will receive the binaries)
       # ---------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -73,13 +70,21 @@ jobs:
           persist-credentials: false   # we’ll push with a separate token
 
       # ---------------------------------------------------------
-      # 1️⃣  Install CMake & Ninja (cross‑platform action)
+      # 1️⃣  Install CMake (official action) and Ninja
       # ---------------------------------------------------------
-      - name: Install CMake & Ninja
-        uses: lukka/get-cmake@v3
+      - name: Install CMake
+        uses: ursdev/setup-cmake@v2        # provides latest CMake + adds to PATH
         with:
-          cmakeVersion: 3.27.0
-          ninjaVersion: 1.11.1
+          cmake-version: 3.27
+
+      - name: Install Ninja (cross‑platform)
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            choco install ninja -y
+          else
+            sudo apt-get update
+            sudo apt-get install -y ninja-build
+          fi
 
       # ---------------------------------------------------------
       # 2️⃣  Install platform‑specific toolchains
@@ -109,7 +114,7 @@ jobs:
           echo "$(pwd)/emsdk" >> $GITHUB_PATH
 
       # ---------------------------------------------------------
-      # 3️⃣  Copy the custom toolchain files into the runner
+      # 3️⃣  Copy custom CMake toolchain files
       # ---------------------------------------------------------
       - name: Copy toolchain files
         run: |
@@ -126,7 +131,7 @@ jobs:
           # cd "${BUILD_ROOT}/src" && git checkout v2025.21
 
       # ---------------------------------------------------------
-      # 5️⃣  Configure CMake
+      # 5️⃣  CMake configuration
       # ---------------------------------------------------------
       - name: CMake configure
         run: |
@@ -146,7 +151,7 @@ jobs:
           cmake --build "${BUILD_ROOT}/${{ matrix.target }}" --config Release
 
       # ---------------------------------------------------------
-      # 7️⃣  Locate the produced library and copy it to a version‑controlled folder
+      # 7️⃣  Locate the produced library and copy it to a version‑controlled path
       # ---------------------------------------------------------
       - name: Locate output library
         id: locate
@@ -160,7 +165,7 @@ jobs:
           cp "${{ steps.locate.outputs.lib_path }}" "${OUTPUT_ROOT}/"
 
       # ---------------------------------------------------------
-      # 8️⃣  Commit & push the binaries back to the repo
+      # 8️⃣  Commit & push binaries back to the repo
       # ---------------------------------------------------------
       - name: Set up git identity
         run: |

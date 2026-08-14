@@ -1,9 +1,55 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
         <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
     </PropertyGroup>
+
+    <!-- lib/ is written by .github/workflows/compile-slang.yml. Folder names are
+         the workflow's target names, which are not RIDs. Drop the SDK's default
+         None glob over them so the entries below are the only ones. -->
+    <ItemGroup>
+        <None Remove="lib\**" />
+    </ItemGroup>
+
+    <!-- Pack into runtimes/<rid>/native; consumers resolve the right one. -->
+    <ItemGroup>
+        <None Include="lib\win-x86_64\*"        Pack="true" PackagePath="runtimes\win-x64\native"        Visible="false" />
+        <None Include="lib\win-arm64\*"         Pack="true" PackagePath="runtimes\win-arm64\native"      Visible="false" />
+        <None Include="lib\linux-x86_64\*"      Pack="true" PackagePath="runtimes\linux-x64\native"      Visible="false" />
+        <None Include="lib\linux-aarch64\*"     Pack="true" PackagePath="runtimes\linux-arm64\native"    Visible="false" />
+        <None Include="lib\macos-x86_64\*"      Pack="true" PackagePath="runtimes\osx-x64\native"        Visible="false" />
+        <None Include="lib\macos-arm64\*"       Pack="true" PackagePath="runtimes\osx-arm64\native"      Visible="false" />
+        <None Include="lib\android-arm64\*"     Pack="true" PackagePath="runtimes\android-arm64\native"  Visible="false" />
+        <None Include="lib\wasm-emscripten\*.a" Pack="true" PackagePath="runtimes\browser-wasm\native"   Visible="false" />
+    </ItemGroup>
+
+    <!-- Map the building RID back to a lib/ folder name. -->
+    <PropertyGroup>
+        <SlangRid Condition="'$(SlangRid)' == ''">$(RuntimeIdentifier)</SlangRid>
+        <SlangRid Condition="'$(SlangRid)' == ''">$(NETCoreSdkPortableRuntimeIdentifier)</SlangRid>
+
+        <SlangLibDir Condition="'$(SlangRid)' == 'win-x64'">win-x86_64</SlangLibDir>
+        <SlangLibDir Condition="'$(SlangRid)' == 'win-arm64'">win-arm64</SlangLibDir>
+        <SlangLibDir Condition="'$(SlangRid)' == 'linux-x64'">linux-x86_64</SlangLibDir>
+        <SlangLibDir Condition="'$(SlangRid)' == 'linux-arm64'">linux-aarch64</SlangLibDir>
+        <SlangLibDir Condition="'$(SlangRid)' == 'osx-x64'">macos-x86_64</SlangLibDir>
+        <SlangLibDir Condition="'$(SlangRid)' == 'osx-arm64'">macos-arm64</SlangLibDir>
+        <SlangLibDir Condition="'$(SlangRid)' == 'android-arm64'">android-arm64</SlangLibDir>
+    </PropertyGroup>
+
+    <!-- Update, not Include: these files are already None items above. Flows to
+         ProjectReference consumers' output, so DllImport resolves without pack. -->
+    <ItemGroup Condition="'$(SlangLibDir)' != ''">
+        <None Update="lib\$(SlangLibDir)\*"
+              CopyToOutputDirectory="PreserveNewest"
+              Link="%(Filename)%(Extension)" />
+    </ItemGroup>
+
+    <!-- WASM has no dynamic P/Invoke; the archive is linked into dotnet.wasm. -->
+    <ItemGroup Condition="'$(SlangRid)' == 'browser-wasm'">
+        <NativeFileReference Include="lib\wasm-emscripten\*.a" />
+    </ItemGroup>
 
 </Project>

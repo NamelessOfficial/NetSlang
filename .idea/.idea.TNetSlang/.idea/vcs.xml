@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="VcsDirectoryMappings">
+    <mapping directory="" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../.." vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Nameless.Editor" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../.." vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../Nameless.Frent" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/Vendor/slang" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/Vendor/slang/external/WindowsToolchain" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/Vendor/slang/external/cmark" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/Vendor/slang/external/fast_float" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/Vendor/slang/external/glm" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/Vendor/slang/external/glslang" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/Vendor/slang/external/imgui" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/Vendor/slang/external/lua" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/Vendor/slang/external/lz4" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/Vendor/slang/external/metal-cpp" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/Vendor/slang/external/mimalloc" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/Vendor/slang/external/miniz" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/Vendor/slang/external/optix-dev" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/Vendor/slang/external/slang-rhi" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/Vendor/slang/external/spirv-headers" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/Vendor/slang/external/spirv-tools" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/Vendor/slang/external/tinyobjloader" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/Vendor/slang/external/unordered_dense" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/Vendor/slang/external/vulkan" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../PhonoNET" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../SharpYaml" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../Slangc.NET" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../../../Nameless.Physics" vcs="Git" />
+  </component>
+</project>

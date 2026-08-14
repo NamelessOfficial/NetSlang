@@ -82,7 +82,7 @@ jobs:
 
     env:
       BUILD_ROOT: ${{ github.workspace }}/slang-build
-      OUTPUT_ROOT: ${{ github.workspace }}/lib/${{ matrix.target }}
+      OUTPUT_ROOT: ${{ github.workspace }}/NetSlang/lib/${{ matrix.target }}
 
     defaults:
       run:
@@ -232,7 +232,7 @@ jobs:
         env:
           GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git add -A lib/${{ matrix.target }}
+          git add -A NetSlang/lib/${{ matrix.target }}
           if git diff --cached --quiet; then
             echo "No changes for ${{ matrix.target }}."
             exit 0

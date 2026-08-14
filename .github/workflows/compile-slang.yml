@@ -1,14 +1,14 @@
- # .github/workflows/slang-cross.yml
+# .github/workflows/compile-slang.yml
 name: Slang cross‑compile & commit binaries
 on:
   push:
-    branches: [ main ]          # run on every push to main
-  workflow_dispatch:            # allow manual runs
+    branches: [ main ]
+  workflow_dispatch:          # allow manual runs
 
 jobs:
-  # -----------------------------------------------------------------
-  # 1️⃣  Set up the matrix of build configurations
-  # -----------------------------------------------------------------
+  # -------------------------------------------------------------
+  # 1️⃣  Build matrix – one entry per OS/architecture
+  # -------------------------------------------------------------
   build:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -36,13 +36,13 @@ jobs:
             lib_ext: so
 
           # ----- macOS --------------------------------------------------
-          - os: macos-14          # Apple Silicon runner (covers arm64)
-            target: macos-arm64
-            toolchain: macos-arm64.cmake
-            lib_ext: dylib
-          - os: macos-13          # Intel runner (covers x86_64)
+          - os: macos-13          # Intel runner (x86_64)
             target: macos-x86_64
             toolchain: macos-x86_64.cmake
+            lib_ext: dylib
+          - os: macos-14          # Apple‑silicon runner (arm64)
+            target: macos-arm64
+            toolchain: macos-arm64.cmake
             lib_ext: dylib
 
           # ----- Android (ARM64) ----------------------------------------
@@ -55,39 +55,36 @@ jobs:
           - os: ubuntu-22.04
             target: wasm-emscripten
             toolchain: wasm-emscripten.cmake
-            lib_ext: js   # Emscripten emits .js + .wasm; we keep the .js wrapper
+            lib_ext: js   # Emscripten emits .js wrapper (and .wasm)
 
     env:
       SLANG_REPO: https://github.com/shader-slang/slang.git
-      BUILD_ROOT: ${{ runner.workspace }}/slang-build
-      TOOLCHAIN_DIR: ${{ runner.workspace }}/toolchains
-      OUTPUT_DIR: ${{ github.workspace }}/prebuilt/${{ matrix.target }}
+      BUILD_ROOT: ${{ github.workspace }}/slang-build
+      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains
+      OUTPUT_ROOT: ${{ github.workspace }}/prebuilt/${{ matrix.target }}
 
     steps:
-      # ---------------------------------------------------------------
-      # 0️⃣  Checkout this repository (the one that will receive the binaries)
-      # ---------------------------------------------------------------
+      # ---------------------------------------------------------
+      # 0️⃣  Checkout THIS repository (the one that will receive the binaries)
+      # ---------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           persist-credentials: false   # we’ll push with a separate token
 
-      # ---------------------------------------------------------------
-      # 1️⃣  Install common dependencies
-      # ---------------------------------------------------------------
-      - name: Install cmake & ninja
+      # ---------------------------------------------------------
+      # 1️⃣  Install CMake & Ninja (cross‑platform action)
+      # ---------------------------------------------------------
+      - name: Install CMake & Ninja
         uses: lukka/get-cmake@v3
         with:
           cmakeVersion: 3.27.0
           ninjaVersion: 1.11.1
 
-      # ---------------------------------------------------------------
+      # ---------------------------------------------------------
       # 2️⃣  Install platform‑specific toolchains
-      # ---------------------------------------------------------------
-      - name: Install Windows toolchain (MSVC)               # no extra step needed on windows‑2022
-        if: runner.os == 'Windows'
-
-      - name: Install Linux cross‑toolchains
+      # ---------------------------------------------------------
+      - name: Install Linux aarch64 cross‑compiler
         if: runner.os == 'Linux' && matrix.target == 'linux-aarch64'
         run: |
           sudo apt-get update
@@ -111,26 +108,26 @@ jobs:
           source ./emsdk/emsdk_env.sh
           echo "$(pwd)/emsdk" >> $GITHUB_PATH
 
-      # ---------------------------------------------------------------
-      # 3️⃣  Prepare toolchain files (they live in .github/toolchains/)
-      # ---------------------------------------------------------------
+      # ---------------------------------------------------------
+      # 3️⃣  Copy the custom toolchain files into the runner
+      # ---------------------------------------------------------
       - name: Copy toolchain files
         run: |
           mkdir -p "${TOOLCHAIN_DIR}"
           cp -r .github/toolchains/* "${TOOLCHAIN_DIR}/"
 
-      # ---------------------------------------------------------------
-      # 4️⃣  Clone Slang source
-      # ---------------------------------------------------------------
+      # ---------------------------------------------------------
+      # 4️⃣  Clone Slang source code
+      # ---------------------------------------------------------
       - name: Clone Slang repository
         run: |
           git clone "${SLANG_REPO}" "${BUILD_ROOT}/src"
-          # Optional: checkout a stable tag, e.g. v2025.21
+          # Optional: checkout a specific tag, e.g. v2025.21
           # cd "${BUILD_ROOT}/src" && git checkout v2025.21
 
-      # ---------------------------------------------------------------
-      # 5️⃣  Configure & build with CMake
-      # ---------------------------------------------------------------
+      # ---------------------------------------------------------
+      # 5️⃣  Configure CMake
+      # ---------------------------------------------------------
       - name: CMake configure
         run: |
           cmake -S "${BUILD_ROOT}/src" \
@@ -141,41 +138,44 @@ jobs:
                 -DSLANG_ENABLE_SHARED=ON \
                 -DSLANG_BUILD_STATIC=OFF
 
+      # ---------------------------------------------------------
+      # 6️⃣  Build the shared library
+      # ---------------------------------------------------------
       - name: CMake build
         run: |
           cmake --build "${BUILD_ROOT}/${{ matrix.target }}" --config Release
 
-      # ---------------------------------------------------------------
-      # 6️⃣  Gather the produced library
-      # ---------------------------------------------------------------
-      - name: Locate shared library
+      # ---------------------------------------------------------
+      # 7️⃣  Locate the produced library and copy it to a version‑controlled folder
+      # ---------------------------------------------------------
+      - name: Locate output library
         id: locate
         run: |
           lib=$(find "${BUILD_ROOT}/${{ matrix.target }}" -type f -name "slang-compiler.*${{ matrix.lib_ext }}" | head -n1)
           echo "lib_path=$lib" >> $GITHUB_OUTPUT
 
-      - name: Copy library to output folder
+      - name: Copy library to prebuilt folder
         run: |
-          mkdir -p "${OUTPUT_DIR}"
-          cp "${{ steps.locate.outputs.lib_path }}" "${OUTPUT_DIR}/"
+          mkdir -p "${OUTPUT_ROOT}"
+          cp "${{ steps.locate.outputs.lib_path }}" "${OUTPUT_ROOT}/"
 
-      # ---------------------------------------------------------------
-      # 7️⃣  Commit the binaries back to the repo (requires a Personal Access Token)
-      # ---------------------------------------------------------------
-      - name: Set up git user
+      # ---------------------------------------------------------
+      # 8️⃣  Commit & push the binaries back to the repo
+      # ---------------------------------------------------------
+      - name: Set up git identity
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Commit & push binaries
+      - name: Commit and push binaries
         env:
-          # Create a secret called `PAT_TOKEN` in the repo settings with `repo` scope.
+          # Create a secret named PAT_TOKEN with `repo` scope.
           GIT_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           git add prebuilt/${{ matrix.target }}/*
           if git diff --cached --quiet; then
-            echo "No changes for ${{ matrix.target }} – skipping commit."
+            echo "No changes for ${{ matrix.target }} – nothing to commit."
           else
-            git commit -m "ci: update slang binaries for ${{ matrix.target }} (auto‑generated)"
+            git commit -m "ci: update Slang binaries for ${{ matrix.target }} (auto‑generated)"
             git push https://x-access-token:${GIT_TOKEN}@github.com/${{ github.repository }}.git HEAD:${{ github.ref }}
           fi

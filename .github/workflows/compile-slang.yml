@@ -15,23 +15,29 @@ jobs:
           # ponytail: no custom toolchain files. Native targets need none;
           # android/wasm reuse the toolchain that ships with the NDK / emsdk.
           # ---------- Windows ----------
-          - os: windows-2022
+          - os: windows-2025
             target: win-x86_64
-            msvc_arch: x64
+            msvc_arch: amd64
             lib_ext: dll
-          - os: windows-2022
+          # amd64_arm64 = x64 host, ARM64 target. Plain "arm64" would select the
+          # ARM64-hosted toolchain, which cannot run on an x64 runner.
+          # cl is pinned so CMake uses the one vcvars put on PATH instead of
+          # discovering the ARM64-hosted clang.
+          - os: windows-2025
             target: win-arm64
-            msvc_arch: arm64
+            msvc_arch: amd64_arm64
             cmake_opts: |
               CMAKE_SYSTEM_NAME=Windows
               CMAKE_SYSTEM_PROCESSOR=ARM64
+              CMAKE_C_COMPILER=cl
+              CMAKE_CXX_COMPILER=cl
             lib_ext: dll
 
           # ---------- Linux ----------
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             target: linux-x86_64
             lib_ext: so
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             target: linux-aarch64
             cmake_opts: |
               CMAKE_SYSTEM_NAME=Linux
@@ -41,18 +47,20 @@ jobs:
             lib_ext: so
 
           # ---------- macOS ----------
-          - os: macos-13          # Intel runner (x86_64)
+          # Both from the arm64 runner; the Xcode SDK is universal, so
+          # CMAKE_OSX_ARCHITECTURES covers x86_64 without an Intel runner.
+          - os: macos-15
             target: macos-x86_64
             cmake_opts: CMAKE_OSX_ARCHITECTURES=x86_64
             lib_ext: dylib
-          - os: macos-14          # Apple‑silicon runner (arm64)
+          - os: macos-15
             target: macos-arm64
             cmake_opts: CMAKE_OSX_ARCHITECTURES=arm64
             lib_ext: dylib
 
           # ---------- Android (ARM64) ----------
           # CMAKE_TOOLCHAIN_FILE comes from the env, set by the NDK step
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             target: android-arm64
             cmake_opts: |
               ANDROID_ABI=arm64-v8a
@@ -60,7 +68,7 @@ jobs:
             lib_ext: so
 
           # ---------- WebAssembly (Emscripten) ----------
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             target: wasm-emscripten
             lib_ext: js   # Emscripten emits a .js wrapper (and .wasm)
 
@@ -79,7 +87,7 @@ jobs:
       # 0️⃣  Checkout this repository (the one that will receive the binaries)
       # ---------------------------------------------------------
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false   # we’ll push with a separate token
 
@@ -103,7 +111,7 @@ jobs:
 
       - name: Install Emscripten SDK
         if: matrix.target == 'wasm-emscripten'
-        uses: mymindstorm/setup-emsdk@v14
+        uses: emscripten-core/setup-emsdk@v16
 
       - name: Point CMake at the Emscripten toolchain
         if: matrix.target == 'wasm-emscripten'
@@ -111,7 +119,7 @@ jobs:
 
       - name: Set up MSVC environment
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
           arch: ${{ matrix.msvc_arch }}
 

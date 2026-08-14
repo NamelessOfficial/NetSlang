@@ -12,53 +12,67 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # ponytail: no custom toolchain files. Native targets need none;
+          # android/wasm reuse the toolchain that ships with the NDK / emsdk.
           # ---------- Windows ----------
           - os: windows-2022
             target: win-x86_64
-            toolchain: win64-x86_64.cmake
+            msvc_arch: x64
             lib_ext: dll
           - os: windows-2022
             target: win-arm64
-            toolchain: win-arm64.cmake
+            msvc_arch: arm64
+            cmake_opts: |
+              CMAKE_SYSTEM_NAME=Windows
+              CMAKE_SYSTEM_PROCESSOR=ARM64
             lib_ext: dll
 
           # ---------- Linux ----------
           - os: ubuntu-22.04
             target: linux-x86_64
-            toolchain: linux-x86_64.cmake
             lib_ext: so
           - os: ubuntu-22.04
             target: linux-aarch64
-            toolchain: linux-aarch64.cmake
+            cmake_opts: |
+              CMAKE_SYSTEM_NAME=Linux
+              CMAKE_SYSTEM_PROCESSOR=aarch64
+              CMAKE_C_COMPILER=aarch64-linux-gnu-gcc
+              CMAKE_CXX_COMPILER=aarch64-linux-gnu-g++
             lib_ext: so
 
           # ---------- macOS ----------
           - os: macos-13          # Intel runner (x86_64)
             target: macos-x86_64
-            toolchain: macos-x86_64.cmake
+            cmake_opts: CMAKE_OSX_ARCHITECTURES=x86_64
             lib_ext: dylib
           - os: macos-14          # Apple‑silicon runner (arm64)
             target: macos-arm64
-            toolchain: macos-arm64.cmake
+            cmake_opts: CMAKE_OSX_ARCHITECTURES=arm64
             lib_ext: dylib
 
           # ---------- Android (ARM64) ----------
+          # CMAKE_TOOLCHAIN_FILE comes from the env, set by the NDK step
           - os: ubuntu-22.04
             target: android-arm64
-            toolchain: android-arm64.cmake
+            cmake_opts: |
+              ANDROID_ABI=arm64-v8a
+              ANDROID_PLATFORM=android-24
             lib_ext: so
 
           # ---------- WebAssembly (Emscripten) ----------
           - os: ubuntu-22.04
             target: wasm-emscripten
-            toolchain: wasm-emscripten.cmake
             lib_ext: js   # Emscripten emits a .js wrapper (and .wasm)
 
     env:
       SLANG_REPO: https://github.com/shader-slang/slang.git
       BUILD_ROOT: ${{ github.workspace }}/slang-build
-      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchains
-      OUTPUT_ROOT: ${{ github.workspace }}/lib/${{ matrix.target }}
+      OUTPUT_ROOT: ${{ github.workspace }}/prebuilt/${{ matrix.target }}
+
+    # bash on every runner, so one set of scripts works on Windows too
+    defaults:
+      run:
+        shell: bash
 
     steps:
       # ---------------------------------------------------------
@@ -78,31 +92,28 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
-      - name: Install Android NDK
+      # ponytail: ubuntu runners ship an NDK already, no download needed.
+      # CMake >= 3.21 reads CMAKE_TOOLCHAIN_FILE from the environment, so the
+      # cmake-action needs no toolchain option of its own.
+      - name: Use preinstalled Android NDK
         if: matrix.target == 'android-arm64'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y unzip
-          wget -qO- https://dl.google.com/android/repository/android-ndk-r27-linux.zip | sudo unzip -d /opt
-          echo "ANDROID_NDK_ROOT=/opt/android-ndk-r27" >> $GITHUB_ENV
-          echo "${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_LATEST_HOME" >> $GITHUB_ENV
+          echo "CMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake" >> $GITHUB_ENV
 
       - name: Install Emscripten SDK
         if: matrix.target == 'wasm-emscripten'
-        run: |
-          git clone https://github.com/emscripten-core/emsdk.git --depth 1
-          ./emsdk/emsdk install latest
-          ./emsdk/emsdk activate latest
-          source ./emsdk/emsdk_env.sh
-          echo "$(pwd)/emsdk" >> $GITHUB_PATH
+        uses: mymindstorm/setup-emsdk@v14
 
-      # ---------------------------------------------------------
-      # 3️⃣  Copy custom CMake toolchain files
-      # ---------------------------------------------------------
-      - name: Copy toolchain files
-        run: |
-          mkdir -p "${TOOLCHAIN_DIR}"
-          cp -r .github/toolchains/* "${TOOLCHAIN_DIR}/"
+      - name: Point CMake at the Emscripten toolchain
+        if: matrix.target == 'wasm-emscripten'
+        run: echo "CMAKE_TOOLCHAIN_FILE=$EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake" >> $GITHUB_ENV
+
+      - name: Set up MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc_arch }}
 
       # ---------------------------------------------------------
       # 4️⃣  Clone Slang source code
@@ -117,29 +128,25 @@ jobs:
         uses: threeal/cmake-action@v2.1.0
         with:
           generator: Ninja
-          source-dir: "${BUILD_ROOT}/src"
-          build-dir: "${BUILD_ROOT}/${{ matrix.target }}"
+          source-dir: ${{ github.workspace }}/slang-build/src
+          build-dir: ${{ github.workspace }}/slang-build/${{ matrix.target }}
           options: |
             CMAKE_BUILD_TYPE=Release
-            CMAKE_TOOLCHAIN_FILE="${TOOLCHAIN_DIR}/${{ matrix.toolchain }}"
-            SLANG_ENABLE_SHARED=ON
-            SLANG_BUILD_STATIC=OFF
-          build-args: |
-            config Release
+            SLANG_LIB_TYPE=SHARED
+            ${{ matrix.cmake_opts }}
+          build-args: --config Release
 
       # ---------------------------------------------------------
       # 7️⃣  Locate the produced library and copy it to a version‑controlled path
       # ---------------------------------------------------------
-      - name: Locate output library
-        id: locate
-        run: |
-          lib=$(find "${BUILD_ROOT}/${{ matrix.target }}" -type f -name "slang-compiler.*${{ matrix.lib_ext }}" | head -n1)
-          echo "lib_path=$lib" >> $GITHUB_OUTPUT
-
       - name: Copy library to prebuilt folder
         run: |
+          lib=$(find "${BUILD_ROOT}/${{ matrix.target }}" -type f \
+            \( -name "slang-compiler.${{ matrix.lib_ext }}" \
+            -o -name "libslang-compiler.${{ matrix.lib_ext }}" \) | head -n1)
+          test -n "$lib" || { echo "::error::no slang-compiler.${{ matrix.lib_ext }} produced"; exit 1; }
           mkdir -p "${OUTPUT_ROOT}"
-          cp "${{ steps.locate.outputs.lib_path }}" "${OUTPUT_ROOT}/"
+          cp "$lib" "${OUTPUT_ROOT}/"
 
       # ---------------------------------------------------------
       # 8️⃣  Commit & push binaries back to the repo

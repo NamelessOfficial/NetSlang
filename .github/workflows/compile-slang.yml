@@ -1,0 +1,181 @@
+ # .github/workflows/slang-cross.yml
+name: Slang cross‑compile & commit binaries
+on:
+  push:
+    branches: [ main ]          # run on every push to main
+  workflow_dispatch:            # allow manual runs
+
+jobs:
+  # -----------------------------------------------------------------
+  # 1️⃣  Set up the matrix of build configurations
+  # -----------------------------------------------------------------
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ----- Windows -------------------------------------------------
+          - os: windows-2022
+            target: win-x86_64
+            toolchain: win64-x86_64.cmake
+            lib_ext: dll
+          - os: windows-2022
+            target: win-arm64
+            toolchain: win-arm64.cmake
+            lib_ext: dll
+
+          # ----- Linux ---------------------------------------------------
+          - os: ubuntu-22.04
+            target: linux-x86_64
+            toolchain: linux-x86_64.cmake
+            lib_ext: so
+          - os: ubuntu-22.04
+            target: linux-aarch64
+            toolchain: linux-aarch64.cmake
+            lib_ext: so
+
+          # ----- macOS --------------------------------------------------
+          - os: macos-14          # Apple Silicon runner (covers arm64)
+            target: macos-arm64
+            toolchain: macos-arm64.cmake
+            lib_ext: dylib
+          - os: macos-13          # Intel runner (covers x86_64)
+            target: macos-x86_64
+            toolchain: macos-x86_64.cmake
+            lib_ext: dylib
+
+          # ----- Android (ARM64) ----------------------------------------
+          - os: ubuntu-22.04
+            target: android-arm64
+            toolchain: android-arm64.cmake
+            lib_ext: so
+
+          # ----- WebAssembly (Emscripten) -------------------------------
+          - os: ubuntu-22.04
+            target: wasm-emscripten
+            toolchain: wasm-emscripten.cmake
+            lib_ext: js   # Emscripten emits .js + .wasm; we keep the .js wrapper
+
+    env:
+      SLANG_REPO: https://github.com/shader-slang/slang.git
+      BUILD_ROOT: ${{ runner.workspace }}/slang-build
+      TOOLCHAIN_DIR: ${{ runner.workspace }}/toolchains
+      OUTPUT_DIR: ${{ github.workspace }}/prebuilt/${{ matrix.target }}
+
+    steps:
+      # ---------------------------------------------------------------
+      # 0️⃣  Checkout this repository (the one that will receive the binaries)
+      # ---------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false   # we’ll push with a separate token
+
+      # ---------------------------------------------------------------
+      # 1️⃣  Install common dependencies
+      # ---------------------------------------------------------------
+      - name: Install cmake & ninja
+        uses: lukka/get-cmake@v3
+        with:
+          cmakeVersion: 3.27.0
+          ninjaVersion: 1.11.1
+
+      # ---------------------------------------------------------------
+      # 2️⃣  Install platform‑specific toolchains
+      # ---------------------------------------------------------------
+      - name: Install Windows toolchain (MSVC)               # no extra step needed on windows‑2022
+        if: runner.os == 'Windows'
+
+      - name: Install Linux cross‑toolchains
+        if: runner.os == 'Linux' && matrix.target == 'linux-aarch64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Install Android NDK
+        if: matrix.target == 'android-arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y unzip
+          wget -qO- https://dl.google.com/android/repository/android-ndk-r27-linux.zip | sudo unzip -d /opt
+          echo "ANDROID_NDK_ROOT=/opt/android-ndk-r27" >> $GITHUB_ENV
+          echo "${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+
+      - name: Install Emscripten SDK
+        if: matrix.target == 'wasm-emscripten'
+        run: |
+          git clone https://github.com/emscripten-core/emsdk.git --depth 1
+          ./emsdk/emsdk install latest
+          ./emsdk/emsdk activate latest
+          source ./emsdk/emsdk_env.sh
+          echo "$(pwd)/emsdk" >> $GITHUB_PATH
+
+      # ---------------------------------------------------------------
+      # 3️⃣  Prepare toolchain files (they live in .github/toolchains/)
+      # ---------------------------------------------------------------
+      - name: Copy toolchain files
+        run: |
+          mkdir -p "${TOOLCHAIN_DIR}"
+          cp -r .github/toolchains/* "${TOOLCHAIN_DIR}/"
+
+      # ---------------------------------------------------------------
+      # 4️⃣  Clone Slang source
+      # ---------------------------------------------------------------
+      - name: Clone Slang repository
+        run: |
+          git clone "${SLANG_REPO}" "${BUILD_ROOT}/src"
+          # Optional: checkout a stable tag, e.g. v2025.21
+          # cd "${BUILD_ROOT}/src" && git checkout v2025.21
+
+      # ---------------------------------------------------------------
+      # 5️⃣  Configure & build with CMake
+      # ---------------------------------------------------------------
+      - name: CMake configure
+        run: |
+          cmake -S "${BUILD_ROOT}/src" \
+                -B "${BUILD_ROOT}/${{ matrix.target }}" \
+                -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN_DIR}/${{ matrix.toolchain }}" \
+                -DSLANG_ENABLE_SHARED=ON \
+                -DSLANG_BUILD_STATIC=OFF
+
+      - name: CMake build
+        run: |
+          cmake --build "${BUILD_ROOT}/${{ matrix.target }}" --config Release
+
+      # ---------------------------------------------------------------
+      # 6️⃣  Gather the produced library
+      # ---------------------------------------------------------------
+      - name: Locate shared library
+        id: locate
+        run: |
+          lib=$(find "${BUILD_ROOT}/${{ matrix.target }}" -type f -name "slang-compiler.*${{ matrix.lib_ext }}" | head -n1)
+          echo "lib_path=$lib" >> $GITHUB_OUTPUT
+
+      - name: Copy library to output folder
+        run: |
+          mkdir -p "${OUTPUT_DIR}"
+          cp "${{ steps.locate.outputs.lib_path }}" "${OUTPUT_DIR}/"
+
+      # ---------------------------------------------------------------
+      # 7️⃣  Commit the binaries back to the repo (requires a Personal Access Token)
+      # ---------------------------------------------------------------
+      - name: Set up git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit & push binaries
+        env:
+          # Create a secret called `PAT_TOKEN` in the repo settings with `repo` scope.
+          GIT_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          git add prebuilt/${{ matrix.target }}/*
+          if git diff --cached --quiet; then
+            echo "No changes for ${{ matrix.target }} – skipping commit."
+          else
+            git commit -m "ci: update slang binaries for ${{ matrix.target }} (auto‑generated)"
+            git push https://x-access-token:${GIT_TOKEN}@github.com/${{ github.repository }}.git HEAD:${{ github.ref }}
+          fi

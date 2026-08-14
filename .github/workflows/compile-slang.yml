@@ -64,7 +64,7 @@ jobs:
             target: android-arm64
             cmake_opts: |
               ANDROID_ABI=arm64-v8a
-              ANDROID_PLATFORM=android-24
+              ANDROID_PLATFORM=android-28
             lib_ext: so
 
           # ---------- WebAssembly (Emscripten) ----------
@@ -141,6 +141,12 @@ jobs:
           options: |
             CMAKE_BUILD_TYPE=Release
             SLANG_LIB_TYPE=SHARED
+            SLANG_ENABLE_TESTS=OFF
+            SLANG_ENABLE_EXAMPLES=OFF
+            SLANG_ENABLE_GFX=OFF
+            SLANG_ENABLE_SLANGD=OFF
+            SLANG_ENABLE_SLANG_RHI=OFF
+            SLANG_SLANG_LLVM_FLAVOR=DISABLE
             ${{ matrix.cmake_opts }}
           build-args: --config Release
 

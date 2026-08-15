@@ -126,10 +126,10 @@ jobs:
       BUILD_ROOT: ${{ github.workspace }}/slang-build
       OUTPUT_ROOT: ${{ github.workspace }}/NetSlang/lib/${{ matrix.target }}
       # git reads identity from the environment; no `git config` step needed.
-      GIT_AUTHOR_NAME: github-actions[bot]
-      GIT_AUTHOR_EMAIL: github-actions[bot]@users.noreply.github.com
-      GIT_COMMITTER_NAME: github-actions[bot]
-      GIT_COMMITTER_EMAIL: github-actions[bot]@users.noreply.github.com
+      GIT_AUTHOR_NAME: ${{ vars.CI_NAME }}
+      GIT_AUTHOR_EMAIL: ${{ vars.CI_EMAIL }}
+      GIT_COMMITTER_NAME: ${{ vars.CI_NAME }}
+      GIT_COMMITTER_EMAIL: ${{ vars.CI_EMAIL }}
 
     defaults:
       run:
@@ -144,6 +144,16 @@ jobs:
           submodules: recursive
           # Slang versions itself from `git describe`, and the push retry rebases.
           fetch-depth: 0
+
+      - name: Configure commit signing
+        run: |
+          key="$(git rev-parse --show-toplevel)/.git/signing_key"
+          printf '%s\n' "${{ secrets.CI_SIGNING_KEY }}" > "$key"
+          chmod 600 "$key"
+          git config gpg.format ssh
+          git config user.signingkey "$key"
+          git config commit.gpgsign true
+          git config rebase.gpgSign true
 
       - name: Install Linux aarch64 cross-compiler
         if: matrix.target == 'linux-aarch64'
@@ -239,26 +249,45 @@ jobs:
             --config Release \
             --prefix "${BUILD_ROOT}/install"
 
-      - name: Copy library to lib folder
+      - name: Copy libraries to lib folder
         run: |
+          # slang-glslang is dlopen'd from the directory holding the Slang
+          # library, so it has to sit next to slang-compiler. WASM links
+          # statically and has no runtime module loading, so skip it there.
+          libs=(slang-compiler)
+          if [ "${{ matrix.target }}" != "wasm-emscripten" ]; then
+            libs+=(slang-glslang)
+          fi
+          name_args=()
+          for lib in "${libs[@]}"; do
+            name_args+=(-o -name "*${lib}*")
+          done
+          name_args=("${name_args[@]:1}")
+
           # Filenames carry the Slang version, so wipe or old ones linger.
           rm -rf "${OUTPUT_ROOT}"
           mkdir -p "${OUTPUT_ROOT}"
           # cp -a keeps the soname symlink Linux needs at load time.
           find "${BUILD_ROOT}/install" \( -type f -o -type l \) \
-            -name "*slang-compiler*" \
+            \( "${name_args[@]}" \) \
             ! -name "*.h" ! -name "*.cmake" \
             ! -name "*.dwarf" ! -name "*.pdb" \
             -exec cp -a {} "${OUTPUT_ROOT}/" \;
           ls -l "${OUTPUT_ROOT}"
-          test -n "$(ls -A "${OUTPUT_ROOT}")" || {
-            echo "::error::no slang-compiler library installed for ${{ matrix.target }}"
+
+          # Per-library: a present slang-compiler would mask a missing glslang.
+          missing=()
+          for lib in "${libs[@]}"; do
+            compgen -G "${OUTPUT_ROOT}/*${lib}*" >/dev/null || missing+=("$lib")
+          done
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "::error::not installed for ${{ matrix.target }}: ${missing[*]}"
             echo "--- staging prefix ---"
             find "${BUILD_ROOT}/install" \( -type f -o -type l \)
             echo "--- build tree ---"
             find "${BUILD_ROOT}/${{ matrix.target }}" -name "*slang*" \( -type f -o -type l \)
             exit 1
-          }
+          fi
 
       # Static archives keep every object's debug info and Slang builds Release
       # with -g. Debug only: the symbols are still needed at link time.
@@ -300,19 +329,31 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # Assignees go through the issues API even on a PR.
+      issues: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       CI_BRANCH: ${{ needs.prepare.outputs.branch }}
       SRC_BRANCH: ${{ needs.prepare.outputs.source }}
-      GIT_AUTHOR_NAME: github-actions[bot]
-      GIT_AUTHOR_EMAIL: github-actions[bot]@users.noreply.github.com
-      GIT_COMMITTER_NAME: github-actions[bot]
-      GIT_COMMITTER_EMAIL: github-actions[bot]@users.noreply.github.com
+      GIT_AUTHOR_NAME: ${{ vars.CI_NAME }}
+      GIT_AUTHOR_EMAIL: ${{ vars.CI_EMAIL }}
+      GIT_COMMITTER_NAME: ${{ vars.CI_NAME }}
+      GIT_COMMITTER_EMAIL: ${{ vars.CI_EMAIL }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
+
+      - name: Configure commit signing
+        run: |
+          key="$(git rev-parse --show-toplevel)/.git/signing_key"
+          printf '%s\n' "${{ secrets.CI_SIGNING_KEY }}" > "$key"
+          chmod 600 "$key"
+          git config gpg.format ssh
+          git config user.signingkey "$key"
+          git config commit.gpgsign true
+          git config rebase.gpgSign true
 
       - name: Merge into source branch, or open a PR
         run: |
@@ -342,4 +383,13 @@ jobs:
               --title "ci: Slang binaries for $CI_BRANCH" \
               --body "Automated native build. Merge this to bring the binaries into \`$SRC_BRANCH\`.")
           fi
+
+          # Whoever pushed the submodule bump or clicked dispatch. Separate
+          # calls, after create: a login that cannot be requested (a bot actor,
+          # an outside collaborator) must not sink the PR itself.
+          gh pr edit "$url" --add-reviewer "$GITHUB_ACTOR" \
+            || echo "::warning::could not request review from $GITHUB_ACTOR"
+          gh pr edit "$url" --add-assignee "$GITHUB_ACTOR" \
+            || echo "::warning::could not assign $GITHUB_ACTOR"
+
           echo "::notice::review and merge $url"

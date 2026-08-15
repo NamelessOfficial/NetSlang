@@ -251,6 +251,14 @@ jobs:
 
       - name: Copy libraries to lib folder
         run: |
+          # github.workspace is a Windows path on the MSVC legs, so BUILD_ROOT
+          # and OUTPUT_ROOT arrive with backslashes. Normalise once: bash eats
+          # them as escapes anywhere a glob expands.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            BUILD_ROOT="$(cygpath -u "$BUILD_ROOT")"
+            OUTPUT_ROOT="$(cygpath -u "$OUTPUT_ROOT")"
+          fi
+
           # slang-glslang is dlopen'd from the directory holding the Slang
           # library, so it has to sit next to slang-compiler. WASM links
           # statically and has no runtime module loading, so skip it there.
@@ -258,28 +266,24 @@ jobs:
           if [ "${{ matrix.target }}" != "wasm-emscripten" ]; then
             libs+=(slang-glslang)
           fi
-          name_args=()
-          for lib in "${libs[@]}"; do
-            name_args+=(-o -name "*${lib}*")
-          done
-          name_args=("${name_args[@]:1}")
 
           # Filenames carry the Slang version, so wipe or old ones linger.
           rm -rf "${OUTPUT_ROOT}"
           mkdir -p "${OUTPUT_ROOT}"
-          # cp -a keeps the soname symlink Linux needs at load time.
-          find "${BUILD_ROOT}/install" \( -type f -o -type l \) \
-            \( "${name_args[@]}" \) \
-            ! -name "*.h" ! -name "*.cmake" \
-            ! -name "*.dwarf" ! -name "*.pdb" \
-            -exec cp -a {} "${OUTPUT_ROOT}/" \;
-          ls -l "${OUTPUT_ROOT}"
 
-          # Per-library: a present slang-compiler would mask a missing glslang.
+          # One pass per library so a present slang-compiler cannot mask a
+          # missing glslang. cp -a keeps the soname symlink Linux needs.
           missing=()
           for lib in "${libs[@]}"; do
-            compgen -G "${OUTPUT_ROOT}/*${lib}*" >/dev/null || missing+=("$lib")
+            copied=$(find "${BUILD_ROOT}/install" \( -type f -o -type l \) \
+              -name "*${lib}*" \
+              ! -name "*.h" ! -name "*.cmake" \
+              ! -name "*.dwarf" ! -name "*.pdb" \
+              -exec cp -a {} "${OUTPUT_ROOT}/" \; -print)
+            [ -n "$copied" ] || missing+=("$lib")
           done
+          ls -l "${OUTPUT_ROOT}"
+
           if [ ${#missing[@]} -ne 0 ]; then
             echo "::error::not installed for ${{ matrix.target }}: ${missing[*]}"
             echo "--- staging prefix ---"
